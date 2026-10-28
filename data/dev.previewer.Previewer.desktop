@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Previewer
+GenericName=Image Viewer
+Comment=View images, with zoom, rotate and a thumbnail sidebar
+Exec=previewer %F
+Icon=multimedia-photo-viewer
+Terminal=false
+StartupNotify=true
+Categories=Graphics;Viewer;GTK;
+MimeType=image/png;image/jpeg;image/gif;image/webp;image/bmp;image/svg+xml;image/svg+xml-compressed;image/tiff;image/vnd.microsoft.icon;image/x-icon;image/x-qoi;image/x-tga;image/avif;image/heic;image/heif;image/jxl;image/x-portable-anymap;image/x-portable-bitmap;image/x-portable-graymap;image/x-portable-pixmap;image/vnd.radiance;image/x-exr;
