@@ -43,6 +43,13 @@ const ACCELS: &[(&str, &[&str])] = &[
 ];
 
 fn main() -> glib::ExitCode {
+    if std::env::args()
+        .nth(1)
+        .is_some_and(|arg| arg == "--version")
+    {
+        println!("previewer {}", env!("CARGO_PKG_VERSION"));
+        return glib::ExitCode::SUCCESS;
+    }
     let app = gtk::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_OPEN)

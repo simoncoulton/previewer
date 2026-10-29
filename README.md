@@ -19,7 +19,11 @@ To install: `cargo install --path .`, then copy
 `data/dev.previewer.Previewer.desktop` to `~/.local/share/applications/` so it
 shows up in "Open With".
 
-Needs GTK 4.12 or newer. Opening a second file while Previewer is running opens
+Needs GTK 4.12 or newer. `previewer --version` prints the version.
+
+Prebuilt Linux (x86_64) tarballs are on the
+[releases page](https://github.com/simoncoulton/previewer/releases): unpack,
+put `previewer` on your `PATH`, and copy the `.desktop` file as above. Opening a second file while Previewer is running opens
 a new window in the same process.
 
 ## Formats
@@ -155,6 +159,23 @@ Useful hooks: `.pv-header`, `button.pv-button`, `.sidebar`, `.thumb`,
 - Sidebar thumbnails are generated for the built-in formats only; formats that
   go through GDK's loaders open fine but show a blank thumbnail.
 - Vector images are rasterised once, not re-rendered as you zoom.
+
+## Releases
+
+Every push to `master` that passes `cargo fmt`, `clippy` and the tests is
+released by `.github/workflows/ci.yml`. The version comes from git tags, not
+from `Cargo.toml` (whose `version` is a placeholder; the build stamps the real
+one in). The bump is read from the commit messages since the last tag, in
+[Conventional Commits](https://www.conventionalcommits.org) style:
+
+| Commit | Bump |
+| --- | --- |
+| `feat!: ...`, or a `BREAKING CHANGE:` footer | major (minor while below 1.0) |
+| `feat: ...` | minor |
+| anything else (`fix:`, `chore:`, ...) | patch |
+
+Add `[skip release]` to the latest commit's message to push without releasing.
+`.github/scripts/next-version.sh` shows what the next version would be.
 
 ## Developer aid
 

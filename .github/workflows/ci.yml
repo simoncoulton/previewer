@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GTK
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  # Every push to master that passes the checks is released, if its commits
+  # since the last tag call for a new version (see next-version.sh).
+  release:
+    if: github.event_name == 'push'
+    needs: check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Work out the version
+        id: version
+        run: |
+          version=$(.github/scripts/next-version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -z "$version" ]; then echo "Nothing to release."; else echo "Releasing v$version"; fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.version != ''
+      - uses: Swatinem/rust-cache@v2
+        if: steps.version.outputs.version != ''
+      - name: Install GTK
+        if: steps.version.outputs.version != ''
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev
+
+      - name: Build
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The version lives in the tags; stamp it into the build only.
+          # (Not --locked: the lock file records the placeholder version.)
+          sed -i "0,/^version = .*/s//version = \"$VERSION\"/" Cargo.toml
+          cargo build --release
+          test "$(target/release/previewer --version)" = "previewer $VERSION"
+
+      - name: Package
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          name="previewer-v$VERSION-x86_64-linux"
+          mkdir "$name"
+          cp target/release/previewer data/dev.previewer.Previewer.desktop README.md "$name/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Publish
+        if: steps.version.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --generate-notes \
+            "previewer-v$VERSION-x86_64-linux.tar.gz" \
+            "previewer-v$VERSION-x86_64-linux.tar.gz.sha256"
