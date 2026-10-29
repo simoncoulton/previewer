@@ -45,6 +45,9 @@ works if your system has them (gdk-pixbuf or glycin).
 | Rotate left / right | `Ctrl+L` / `Ctrl+R` |
 | Play / pause animation | `Space` |
 | Copy image | `Ctrl+C` |
+| Undo crop | `Ctrl+Z` |
+| Crop | `Ctrl+K` shows a selection to drag, `Enter` (or `Ctrl+K` again) applies it, `Esc` cancels |
+| Settings | `Ctrl+,` (or the menu) |
 | Toggle sidebar | `F9`, `Ctrl+B` |
 | Full screen | `F11`, `F` (`Esc` leaves) |
 | Close window / quit | `Ctrl+W` / `Ctrl+Q` |
@@ -56,8 +59,12 @@ displays.
 
 ## Settings
 
-`~/.config/previewer/settings.yml` is created on first run, with comments. It
-is watched, so edits apply live.
+Open the settings window with `Ctrl+,` or from the menu. Every control saves as
+you change it and applies at once.
+
+Underneath it is `~/.config/previewer/settings.yml`, created on first run with
+comments. It is watched, so editing it by hand applies live too, and the window
+follows. The window only rewrites the line it changes, so your comments stay.
 
 | Key | Default | |
 | --- | --- | --- |
@@ -72,8 +79,8 @@ is watched, so edits apply live.
 
 ## Theming
 
-The menu (top right) lists every theme; picking one rewrites only the `theme`
-line of `settings.yml`.
+Pick a theme in Settings, under Appearance, where each one shows as a small
+preview. Picking one rewrites only the `theme` line of `settings.yml`.
 
 **Built in:** Catppuccin (Mocha, Macchiato, Frappe, Latte), Tokyo Night,
 Gruvbox Dark, Nord, Rosé Pine, Dracula. See `data/themes.yml`.
@@ -127,6 +134,7 @@ Useful hooks: `.pv-header`, `button.pv-button`, `.sidebar`, `.thumb`,
 | `src/canvas.rs` | zoom/pan/rotate widget, plus the tested view maths in `canvas::geometry` |
 | `src/decode.rs` | file to pixels, off the main thread |
 | `src/library.rs` | which images a window steps through, natural sort |
+| `src/settings_window.rs` | the settings window: sections, theme previews, live controls |
 | `src/window.rs` | header bar, sidebar, status bar, actions, menu |
 | `src/settings.rs` | `settings.yml` |
 | `src/debug.rs` | developer screenshot hook, see below |
@@ -139,6 +147,10 @@ Useful hooks: `.pv-header`, `button.pv-button`, `.sidebar`, `.thumb`,
   file's loop count is ignored, and there is no frame stepping or scrubbing.
   Very large animations are decoded on the fly and so show no frame count.
 - Rotation is a view setting; it is not saved back to the file.
+- Cropping replaces the image in the window only; there is no save yet, but
+  Copy Image copies the cropped result. `Ctrl+Z` undoes crops one at a time.
+  Opening another image and coming back reloads the original. Animated images
+  cannot be cropped.
 - No annotation or markup, and no PDF.
 - Sidebar thumbnails are generated for the built-in formats only; formats that
   go through GDK's loaders open fine but show a blank thumbnail.

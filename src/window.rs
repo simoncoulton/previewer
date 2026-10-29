@@ -19,8 +19,7 @@ use crate::{
     canvas::Canvas,
     decode::{self, DecodeError, RawImage},
     library::{self, Library},
-    settings::SYSTEM_THEME_ID,
-    theme::{self, ThemeKind},
+    settings_window, theme,
 };
 
 const APP_TITLE: &str = "Previewer";
@@ -152,6 +151,7 @@ impl Window {
             .add_css_class("pv-button");
         header.pack_end(&menu_button);
         for (icon, tip, action) in [
+            ("zoom-fit-best-symbolic", "Crop (Ctrl+K)", "win.crop"),
             (
                 "object-rotate-right-symbolic",
                 "Rotate Right (Ctrl+R)",
@@ -167,7 +167,7 @@ impl Window {
                 "Actual Size (1)",
                 "win.zoom-actual",
             ),
-            ("zoom-fit-best-symbolic", "Zoom to Fit (0)", "win.zoom-fit"),
+            ("system-search-symbolic", "Zoom to Fit (0)", "win.zoom-fit"),
             ("zoom-in-symbolic", "Zoom In (+)", "win.zoom-in"),
             ("zoom-out-symbolic", "Zoom Out (−)", "win.zoom-out"),
         ] {
@@ -342,6 +342,23 @@ impl Window {
         add("open", Box::new(|this| this.choose_files()));
         add("copy", Box::new(|this| this.copy_image()));
         add(
+            "settings",
+            Box::new(|this| settings_window::present(this.window.upcast_ref())),
+        );
+        // The first press starts selecting, the next applies the selection.
+        add(
+            "crop",
+            Box::new(|this| {
+                if this.canvas.is_cropping() {
+                    this.apply_crop();
+                } else {
+                    this.canvas.begin_crop();
+                }
+            }),
+        );
+        add("crop-apply", Box::new(|this| this.apply_crop()));
+        add("undo-crop", Box::new(|this| this.undo_crop()));
+        add(
             "next",
             Box::new(|this| {
                 let next = this.library.borrow().next_index();
@@ -393,7 +410,13 @@ impl Window {
         );
         add(
             "leave-fullscreen",
-            Box::new(|this| this.window.set_fullscreened(false)),
+            Box::new(|this| {
+                if this.canvas.is_cropping() {
+                    this.canvas.cancel_crop();
+                } else {
+                    this.window.set_fullscreened(false);
+                }
+            }),
         );
         add("close", Box::new(|this| this.window.close()));
     }
@@ -422,6 +445,9 @@ impl Window {
         ] {
             set(name, has_image);
         }
+        set("crop", self.canvas.can_crop());
+        set("crop-apply", self.canvas.is_cropping());
+        set("undo-crop", self.canvas.can_undo_crop());
         set("play-pause", self.canvas.is_animated());
         set("previous", library.previous_index().is_some());
         set("next", library.next_index().is_some());
@@ -446,6 +472,9 @@ impl Window {
         let info = match self.meta.borrow().as_ref() {
             Some(meta) => {
                 let mut parts = vec![format!("{} × {} px", meta.width, meta.height)];
+                if let Some((w, h)) = self.canvas.crop_size() {
+                    parts.push(format!("crop {w} × {h} (Enter to apply, Esc to cancel)"));
+                }
                 parts.push(meta.format.clone());
                 if self.canvas.is_animated() {
                     let frames = self.canvas.frame_count();
@@ -562,6 +591,22 @@ impl Window {
             Some("win.copy"),
             false,
         ));
+        content.append(&menu_item(
+            popover,
+            "Crop",
+            Some("Ctrl+K"),
+            Some("win.crop"),
+            false,
+        ));
+        if self.canvas.can_undo_crop() {
+            content.append(&menu_item(
+                popover,
+                "Undo Crop",
+                Some("Ctrl+Z"),
+                Some("win.undo-crop"),
+                false,
+            ));
+        }
         if self.canvas.is_animated() {
             let label = if self.canvas.is_playing() {
                 "Pause Animation"
@@ -584,39 +629,13 @@ impl Window {
             false,
         ));
         content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-        let heading = gtk::Label::new(Some("Theme"));
-        heading.add_css_class("menu-heading");
-        heading.set_xalign(0.0);
-        content.append(&heading);
-
-        let current = theme::manager()
-            .map(|m| m.settings().theme)
-            .unwrap_or_else(|| SYSTEM_THEME_ID.to_owned());
-        let themes = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let mut last_kind = ThemeKind::System;
-        for info in theme::available_themes() {
-            if info.kind != last_kind {
-                themes.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-                last_kind = info.kind.clone();
-            }
-            let item = menu_item(popover, &info.name, None, None, info.id == current);
-            let id = info.id.clone();
-            item.connect_clicked(move |_| {
-                if let Some(manager) = theme::manager() {
-                    manager.select_theme(&id);
-                }
-            });
-            themes.append(&item);
-        }
-        let scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_height(true)
-            .max_content_height(300)
-            .child(&themes)
-            .build();
-        scroller.add_css_class("pv-scroll");
-        content.append(&scroller);
+        content.append(&menu_item(
+            popover,
+            "Settings…",
+            Some("Ctrl+,"),
+            Some("win.settings"),
+            false,
+        ));
         content
     }
 
@@ -837,6 +856,47 @@ impl Window {
         self.error_title.set_text(title);
         self.error_detail.set_text(detail);
         self.stack.set_visible_child_name("error");
+        self.refresh_status();
+    }
+
+    /// Crops the canvas and brings the chrome's idea of the image size along.
+    fn apply_crop(&self) {
+        let Some((width, height)) = self.canvas.apply_crop() else {
+            return;
+        };
+        if let Some(meta) = self.meta.borrow_mut().as_mut() {
+            meta.width = width;
+            meta.height = height;
+            // The file on disk is unchanged, so its size no longer describes this.
+            meta.bytes = None;
+        }
+        if self.library.borrow().len() <= 1 {
+            self.title_sub.set_text(&format!("{width} × {height}"));
+        }
+        self.refresh_status();
+    }
+
+    /// Restores the image as it was before the last crop.
+    fn undo_crop(&self) {
+        let Some((width, height)) = self.canvas.undo_crop() else {
+            return;
+        };
+        let original = !self.canvas.can_undo_crop();
+        if let Some(meta) = self.meta.borrow_mut().as_mut() {
+            meta.width = width;
+            meta.height = height;
+            if original {
+                meta.bytes = self
+                    .library
+                    .borrow()
+                    .current()
+                    .and_then(|path| std::fs::metadata(path).ok())
+                    .map(|m| m.len());
+            }
+        }
+        if self.library.borrow().len() <= 1 {
+            self.title_sub.set_text(&format!("{width} × {height}"));
+        }
         self.refresh_status();
     }
 

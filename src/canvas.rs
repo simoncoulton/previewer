@@ -22,6 +22,11 @@ const SCROLL_ZOOM_RATE: f64 = 0.1;
 /// Past this many device pixels per texture pixel, stop smoothing.
 const NEAREST_ABOVE: f64 = 4.0;
 const CHECKER_SQUARE: f32 = 8.0;
+/// Reach of a crop handle, and its drawn size, in CSS pixels.
+const CROP_GRAB: f64 = 10.0;
+const CROP_HANDLE: f32 = 9.0;
+/// How much of the image outside the crop selection is dimmed.
+const CROP_DIM: f32 = 0.55;
 
 /// Pure view maths, kept apart from GTK so it can be tested.
 pub mod geometry {
@@ -97,9 +102,272 @@ pub mod geometry {
         }
     }
 
+    /// A crop selection in displayed image pixels, `x0 <= x1` and `y0 <= y1`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Selection {
+        pub x0: f64,
+        pub y0: f64,
+        pub x1: f64,
+        pub y1: f64,
+    }
+
+    /// Which part of a selection a drag holds.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Grab {
+        Move,
+        /// The edges being dragged: a corner holds one of each axis.
+        Edges {
+            left: bool,
+            right: bool,
+            top: bool,
+            bottom: bool,
+        },
+    }
+
+    /// Smallest selection edge, in image pixels.
+    const MIN_SELECTION: f64 = 1.0;
+
+    impl Selection {
+        pub fn width(&self) -> f64 {
+            self.x1 - self.x0
+        }
+
+        pub fn height(&self) -> f64 {
+            self.y1 - self.y0
+        }
+
+        /// The rectangle between two points, kept inside `bounds`.
+        pub fn between(a: (f64, f64), b: (f64, f64), bounds: (f64, f64)) -> Self {
+            let clamp = |v: f64, max: f64| v.clamp(0.0, max);
+            let (ax, bx) = (clamp(a.0, bounds.0), clamp(b.0, bounds.0));
+            let (ay, by) = (clamp(a.1, bounds.1), clamp(b.1, bounds.1));
+            Self {
+                x0: ax.min(bx),
+                y0: ay.min(by),
+                x1: ax.max(bx),
+                y1: ay.max(by),
+            }
+        }
+
+        /// The whole image.
+        pub fn full(bounds: (f64, f64)) -> Self {
+            Self::between((0.0, 0.0), bounds, bounds)
+        }
+
+        /// What a press at `point` grabs, or `None` outside the selection.
+        /// `tolerance` is the reach of an edge or corner handle.
+        pub fn hit(&self, point: (f64, f64), tolerance: f64) -> Option<Grab> {
+            let near = |v: f64, edge: f64| (v - edge).abs() <= tolerance;
+            let within_x = point.0 >= self.x0 - tolerance && point.0 <= self.x1 + tolerance;
+            let within_y = point.1 >= self.y0 - tolerance && point.1 <= self.y1 + tolerance;
+            if !within_x || !within_y {
+                return None;
+            }
+            let (left, right) = (near(point.0, self.x0), near(point.0, self.x1));
+            let (top, bottom) = (near(point.1, self.y0), near(point.1, self.y1));
+            // On a narrow selection both edges of an axis can be in reach;
+            // take the nearer so the handles never overlap.
+            let left_wins = (point.0 - self.x0).abs() <= (point.0 - self.x1).abs();
+            let top_wins = (point.1 - self.y0).abs() <= (point.1 - self.y1).abs();
+            let (left, right) = (left && left_wins, right && !left_wins);
+            let (top, bottom) = (top && top_wins, bottom && !top_wins);
+            if left || right || top || bottom {
+                Some(Grab::Edges {
+                    left,
+                    right,
+                    top,
+                    bottom,
+                })
+            } else if point.0 >= self.x0
+                && point.0 <= self.x1
+                && point.1 >= self.y0
+                && point.1 <= self.y1
+            {
+                Some(Grab::Move)
+            } else {
+                None
+            }
+        }
+
+        /// This selection after `grab` has been dragged by `delta`, kept
+        /// inside `bounds` and never thinner than one pixel.
+        pub fn dragged(&self, grab: Grab, delta: (f64, f64), bounds: (f64, f64)) -> Self {
+            match grab {
+                Grab::Move => {
+                    let dx = delta.0.clamp(-self.x0, bounds.0 - self.x1);
+                    let dy = delta.1.clamp(-self.y0, bounds.1 - self.y1);
+                    Self {
+                        x0: self.x0 + dx,
+                        y0: self.y0 + dy,
+                        x1: self.x1 + dx,
+                        y1: self.y1 + dy,
+                    }
+                }
+                Grab::Edges {
+                    left,
+                    right,
+                    top,
+                    bottom,
+                } => {
+                    let mut next = *self;
+                    if left {
+                        next.x0 = (self.x0 + delta.0).clamp(0.0, self.x1 - MIN_SELECTION);
+                    }
+                    if right {
+                        next.x1 = (self.x1 + delta.0).clamp(self.x0 + MIN_SELECTION, bounds.0);
+                    }
+                    if top {
+                        next.y0 = (self.y0 + delta.1).clamp(0.0, self.y1 - MIN_SELECTION);
+                    }
+                    if bottom {
+                        next.y1 = (self.y1 + delta.1).clamp(self.y0 + MIN_SELECTION, bounds.1);
+                    }
+                    next
+                }
+            }
+        }
+    }
+
+    /// The texture rectangle `(x, y, width, height)` a selection covers.
+    /// `selection` is in displayed texels (after `quarter_turns` clockwise
+    /// turns) and `texture` is the unrotated texture size.
+    pub fn texture_rect(
+        selection: Selection,
+        quarter_turns: u8,
+        texture: (u32, u32),
+    ) -> (u32, u32, u32, u32) {
+        let (tw, th) = (f64::from(texture.0), f64::from(texture.1));
+        let Selection { x0, y0, x1, y1 } = selection;
+        let (rx0, ry0, rx1, ry1) = match quarter_turns % 4 {
+            0 => (x0, y0, x1, y1),
+            1 => (y0, th - x1, y1, th - x0),
+            2 => (tw - x1, th - y1, tw - x0, th - y0),
+            _ => (tw - y1, x0, tw - y0, x1),
+        };
+        let left = rx0.round().clamp(0.0, tw - 1.0);
+        let top = ry0.round().clamp(0.0, th - 1.0);
+        let right = rx1.round().clamp(left + 1.0, tw);
+        let bottom = ry1.round().clamp(top + 1.0, th);
+        (
+            left as u32,
+            top as u32,
+            (right - left) as u32,
+            (bottom - top) as u32,
+        )
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        const BOUNDS: (f64, f64) = (100.0, 50.0);
+
+        fn sel(x0: f64, y0: f64, x1: f64, y1: f64) -> Selection {
+            Selection { x0, y0, x1, y1 }
+        }
+
+        #[test]
+        fn selection_between_points_is_ordered_and_clamped() {
+            assert_eq!(
+                Selection::between((80.0, 40.0), (-10.0, 10.0), BOUNDS),
+                sel(0.0, 10.0, 80.0, 40.0)
+            );
+            assert_eq!(
+                Selection::between((10.0, 10.0), (500.0, 500.0), BOUNDS),
+                sel(10.0, 10.0, 100.0, 50.0)
+            );
+        }
+
+        #[test]
+        fn press_picks_handle_or_move() {
+            let s = sel(20.0, 10.0, 80.0, 40.0);
+            assert_eq!(s.hit((50.0, 25.0), 4.0), Some(Grab::Move));
+            assert_eq!(s.hit((0.0, 0.0), 4.0), None);
+            assert_eq!(
+                s.hit((20.0, 25.0), 4.0),
+                Some(Grab::Edges {
+                    left: true,
+                    right: false,
+                    top: false,
+                    bottom: false
+                })
+            );
+            assert_eq!(
+                s.hit((81.0, 41.0), 4.0),
+                Some(Grab::Edges {
+                    left: false,
+                    right: true,
+                    top: false,
+                    bottom: true
+                })
+            );
+        }
+
+        #[test]
+        fn narrow_selection_prefers_the_nearer_edge() {
+            let s = sel(50.0, 10.0, 53.0, 40.0);
+            assert_eq!(
+                s.hit((52.0, 25.0), 4.0),
+                Some(Grab::Edges {
+                    left: false,
+                    right: true,
+                    top: false,
+                    bottom: false
+                })
+            );
+        }
+
+        #[test]
+        fn moving_stays_inside_the_image() {
+            let s = sel(20.0, 10.0, 80.0, 40.0);
+            assert_eq!(
+                s.dragged(Grab::Move, (500.0, -500.0), BOUNDS),
+                sel(40.0, 0.0, 100.0, 30.0)
+            );
+        }
+
+        #[test]
+        fn resizing_cannot_invert_or_escape() {
+            let s = sel(20.0, 10.0, 80.0, 40.0);
+            let left = Grab::Edges {
+                left: true,
+                right: false,
+                top: false,
+                bottom: false,
+            };
+            assert_eq!(s.dragged(left, (500.0, 0.0), BOUNDS).x0, 79.0);
+            assert_eq!(s.dragged(left, (-500.0, 0.0), BOUNDS).x0, 0.0);
+            let corner = Grab::Edges {
+                left: false,
+                right: true,
+                top: false,
+                bottom: true,
+            };
+            assert_eq!(
+                s.dragged(corner, (500.0, 500.0), BOUNDS),
+                sel(20.0, 10.0, 100.0, 50.0)
+            );
+        }
+
+        #[test]
+        fn texture_rect_undoes_rotation() {
+            // A 100x50 texture; the selection is its top-left 10x20 as shown.
+            let s = sel(0.0, 0.0, 10.0, 20.0);
+            assert_eq!(texture_rect(s, 0, (100, 50)), (0, 0, 10, 20));
+            // Turned clockwise the displayed image is 50 wide and 100 tall, and
+            // its top-left corner is the texture's bottom-left.
+            assert_eq!(texture_rect(s, 1, (100, 50)), (0, 40, 20, 10));
+            assert_eq!(texture_rect(s, 2, (100, 50)), (90, 30, 10, 20));
+            // Counter-clockwise, the top-left is the texture's top-right.
+            assert_eq!(texture_rect(s, 3, (100, 50)), (80, 0, 20, 10));
+        }
+
+        #[test]
+        fn texture_rect_is_never_empty() {
+            let s = sel(30.0, 30.0, 30.0, 30.0);
+            let (_, _, w, h) = texture_rect(s, 0, (100, 50));
+            assert!(w >= 1 && h >= 1);
+        }
 
         const VIEW: Viewport = Viewport {
             width: 800.0,
@@ -201,13 +469,22 @@ pub mod geometry {
     }
 }
 
-use geometry::Viewport;
+use geometry::{Grab, Selection, Viewport};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ZoomMode {
     /// Track the window: shrink to fit, never enlarge past 100%.
     Fit,
     Custom(f64),
+}
+
+/// A selection drag in progress: either one that holds part of the existing
+/// selection, or a new selection grown from `start`.
+#[derive(Clone, Copy)]
+pub(crate) struct CropDrag {
+    grab: Option<Grab>,
+    from: Selection,
+    start: (f64, f64),
 }
 
 mod imp {
@@ -232,6 +509,11 @@ mod imp {
         pub(super) pointer: Cell<Option<(f64, f64)>>,
         pub(super) drag_origin: Cell<(f64, f64)>,
         pub(super) pinch_base: Cell<f64>,
+        /// Present while cropping: the selection in displayed image pixels.
+        pub(super) crop: Cell<Option<Selection>>,
+        pub(super) crop_drag: Cell<Option<CropDrag>>,
+        /// Textures replaced by crops, most recent last.
+        pub(super) crop_history: RefCell<Vec<gdk::Texture>>,
         pub(super) listeners: RefCell<Vec<Rc<dyn Fn()>>>,
         pub(super) notify_queued: Cell<bool>,
     }
@@ -256,6 +538,9 @@ mod imp {
                 pointer: Cell::new(None),
                 drag_origin: Cell::new((0.0, 0.0)),
                 pinch_base: Cell::new(1.0),
+                crop: Cell::new(None),
+                crop_drag: Cell::new(None),
+                crop_history: RefCell::new(Vec::new()),
                 listeners: RefCell::new(Vec::new()),
                 notify_queued: Cell::new(false),
             }
@@ -291,10 +576,12 @@ mod imp {
             drag.connect_drag_begin(clone!(
                 #[weak]
                 obj,
-                move |_, _, _| {
+                move |_, x, y| {
                     let imp = obj.imp();
                     imp.drag_origin.set(imp.offset.get());
-                    if obj.can_pan() {
+                    if imp.crop.get().is_some() {
+                        obj.begin_crop_drag(x, y);
+                    } else if obj.can_pan() {
                         obj.set_cursor_from_name(Some("grabbing"));
                     }
                 }
@@ -303,6 +590,10 @@ mod imp {
                 #[weak]
                 obj,
                 move |_, dx, dy| {
+                    if obj.imp().crop.get().is_some() {
+                        obj.update_crop_drag(dx, dy);
+                        return;
+                    }
                     let origin = obj.imp().drag_origin.get();
                     obj.set_offset((origin.0 + dx, origin.1 + dy));
                 }
@@ -310,7 +601,10 @@ mod imp {
             drag.connect_drag_end(clone!(
                 #[weak]
                 obj,
-                move |_, _, _| obj.update_cursor()
+                move |_, _, _| {
+                    obj.imp().crop_drag.set(None);
+                    obj.update_cursor();
+                }
             ));
             obj.add_controller(drag);
 
@@ -382,7 +676,7 @@ mod imp {
                 #[weak]
                 obj,
                 move |_, presses, x, y| {
-                    if presses == 2 {
+                    if presses == 2 && obj.imp().crop.get().is_none() {
                         obj.toggle_zoom_at((x, y));
                     }
                 }
@@ -465,6 +759,86 @@ mod imp {
                 &graphene::Rect::new(-tex_w / 2.0, -tex_h / 2.0, tex_w, tex_h),
             );
             snapshot.restore();
+
+            if let Some(selection) = self.crop.get() {
+                let to_widget = |x: f64, y: f64| {
+                    (
+                        (left + x * css_per_logical) as f32,
+                        (top + y * css_per_logical) as f32,
+                    )
+                };
+                draw_crop(
+                    snapshot,
+                    &graphene::Rect::new(left as f32, top as f32, disp_w as f32, disp_h as f32),
+                    selection,
+                    to_widget,
+                );
+            }
+        }
+    }
+
+    /// Dims everything outside `selection`, outlines it and adds the handles.
+    fn draw_crop(
+        snapshot: &gtk::Snapshot,
+        image: &graphene::Rect,
+        selection: Selection,
+        to_widget: impl Fn(f64, f64) -> (f32, f32),
+    ) {
+        let (x0, y0) = to_widget(selection.x0, selection.y0);
+        let (x1, y1) = to_widget(selection.x1, selection.y1);
+        let dim = gdk::RGBA::new(0.0, 0.0, 0.0, CROP_DIM);
+        let (ix0, iy0) = (image.x(), image.y());
+        let (ix1, iy1) = (ix0 + image.width(), iy0 + image.height());
+        for (x, y, w, h) in [
+            (ix0, iy0, image.width(), y0 - iy0),
+            (ix0, y1, image.width(), iy1 - y1),
+            (ix0, y0, x0 - ix0, y1 - y0),
+            (x1, y0, ix1 - x1, y1 - y0),
+        ] {
+            if w > 0.0 && h > 0.0 {
+                snapshot.append_color(&dim, &graphene::Rect::new(x, y, w, h));
+            }
+        }
+
+        let white = gdk::RGBA::new(1.0, 1.0, 1.0, 1.0);
+        let black = gdk::RGBA::new(0.0, 0.0, 0.0, 0.6);
+        let line = 1.0_f32;
+        for (color, grow) in [(&black, line), (&white, 0.0)] {
+            for (x, y, w, h) in [
+                (x0 - grow, y0 - grow, x1 - x0 + 2.0 * grow, line),
+                (x0 - grow, y1 - line + grow, x1 - x0 + 2.0 * grow, line),
+                (x0 - grow, y0 - grow, line, y1 - y0 + 2.0 * grow),
+                (x1 - line + grow, y0 - grow, line, y1 - y0 + 2.0 * grow),
+            ] {
+                snapshot.append_color(color, &graphene::Rect::new(x, y, w, h));
+            }
+        }
+
+        let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let half = CROP_HANDLE / 2.0;
+        for (hx, hy) in [
+            (x0, y0),
+            (mx, y0),
+            (x1, y0),
+            (x0, my),
+            (x1, my),
+            (x0, y1),
+            (mx, y1),
+            (x1, y1),
+        ] {
+            snapshot.append_color(
+                &black,
+                &graphene::Rect::new(
+                    hx - half - 1.0,
+                    hy - half - 1.0,
+                    CROP_HANDLE + 2.0,
+                    CROP_HANDLE + 2.0,
+                ),
+            );
+            snapshot.append_color(
+                &white,
+                &graphene::Rect::new(hx - half, hy - half, CROP_HANDLE, CROP_HANDLE),
+            );
         }
     }
 
@@ -518,6 +892,9 @@ impl Canvas {
     pub fn set_image(&self, texture: Option<gdk::Texture>, pixel_scale: f64, has_alpha: bool) {
         let imp = self.imp();
         self.cancel_timer();
+        imp.crop.set(None);
+        imp.crop_drag.set(None);
+        imp.crop_history.borrow_mut().clear();
         imp.frames.borrow_mut().clear();
         imp.stream.take();
         imp.frame.set(0);
@@ -747,6 +1124,7 @@ impl Canvas {
             return;
         }
         let imp = self.imp();
+        imp.crop.set(None);
         let turns = imp.quarter_turns.get();
         imp.quarter_turns
             .set((turns + if clockwise { 1 } else { 3 }) % 4);
@@ -848,7 +1226,177 @@ impl Canvas {
     }
 
     fn update_cursor(&self) {
-        self.set_cursor_from_name(if self.can_pan() { Some("grab") } else { None });
+        let name = if self.imp().crop.get().is_some() {
+            Some("crosshair")
+        } else if self.can_pan() {
+            Some("grab")
+        } else {
+            None
+        };
+        self.set_cursor_from_name(name);
+    }
+
+    // ---- cropping -------------------------------------------------------
+
+    /// Whether the selection can be started: a still image is showing.
+    pub fn can_crop(&self) -> bool {
+        self.has_image() && !self.is_animated()
+    }
+
+    pub fn is_cropping(&self) -> bool {
+        self.imp().crop.get().is_some()
+    }
+
+    /// Shows a selection covering the whole image to drag in.
+    pub fn begin_crop(&self) {
+        if !self.can_crop() {
+            return;
+        }
+        let Some(logical) = self.logical_size() else {
+            return;
+        };
+        let imp = self.imp();
+        imp.crop.set(Some(Selection::full(logical)));
+        imp.crop_drag.set(None);
+        self.notify_view();
+    }
+
+    pub fn cancel_crop(&self) {
+        let imp = self.imp();
+        if imp.crop.take().is_some() {
+            imp.crop_drag.set(None);
+            self.notify_view();
+        }
+    }
+
+    /// Image size in logical pixels of the selection, for the status bar.
+    pub fn crop_size(&self) -> Option<(u32, u32)> {
+        let selection = self.imp().crop.get()?;
+        Some((
+            selection.width().round().max(1.0) as u32,
+            selection.height().round().max(1.0) as u32,
+        ))
+    }
+
+    /// Replaces the image with the selected part. Returns the new size in
+    /// logical pixels, or `None` if there was nothing to crop.
+    pub fn apply_crop(&self) -> Option<(u32, u32)> {
+        let imp = self.imp();
+        let selection = imp.crop.take()?;
+        imp.crop_drag.set(None);
+        let texture = self.texture()?;
+        let scale = imp.pixel_scale.get();
+        let texels = Selection {
+            x0: selection.x0 * scale,
+            y0: selection.y0 * scale,
+            x1: selection.x1 * scale,
+            y1: selection.y1 * scale,
+        };
+        let (x, y, w, h) = geometry::texture_rect(
+            texels,
+            imp.quarter_turns.get(),
+            (texture.width() as u32, texture.height() as u32),
+        );
+
+        let mut downloader = gdk::TextureDownloader::new(&texture);
+        downloader.set_format(gdk::MemoryFormat::R8g8b8a8Premultiplied);
+        let (bytes, stride) = downloader.download_bytes();
+        let row = w as usize * 4;
+        let mut pixels = Vec::with_capacity(row * h as usize);
+        for line in y..y + h {
+            let start = line as usize * stride + x as usize * 4;
+            pixels.extend_from_slice(&bytes[start..start + row]);
+        }
+        let cropped = gdk::MemoryTexture::new(
+            w as i32,
+            h as i32,
+            gdk::MemoryFormat::R8g8b8a8Premultiplied,
+            &glib::Bytes::from_owned(pixels),
+            row,
+        );
+
+        imp.crop_history.borrow_mut().push(texture);
+        *imp.texture.borrow_mut() = Some(cropped.upcast());
+        imp.mode.set(ZoomMode::Fit);
+        imp.offset.set((0.0, 0.0));
+        self.notify_view();
+        Some((
+            (f64::from(w) / scale).round().max(1.0) as u32,
+            (f64::from(h) / scale).round().max(1.0) as u32,
+        ))
+    }
+
+    pub fn can_undo_crop(&self) -> bool {
+        !self.imp().crop_history.borrow().is_empty()
+    }
+
+    /// Brings back the image from before the last crop. Returns its size in
+    /// logical pixels, or `None` if there was no crop to undo.
+    pub fn undo_crop(&self) -> Option<(u32, u32)> {
+        let imp = self.imp();
+        let texture = imp.crop_history.borrow_mut().pop()?;
+        imp.crop.set(None);
+        imp.crop_drag.set(None);
+        let scale = imp.pixel_scale.get();
+        let size = (
+            (f64::from(texture.width()) / scale).round().max(1.0) as u32,
+            (f64::from(texture.height()) / scale).round().max(1.0) as u32,
+        );
+        *imp.texture.borrow_mut() = Some(texture);
+        imp.mode.set(ZoomMode::Fit);
+        imp.offset.set((0.0, 0.0));
+        self.notify_view();
+        Some(size)
+    }
+
+    /// A widget point as a position in the displayed image, in logical
+    /// pixels. It may lie outside the image.
+    fn widget_to_image(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let logical = self.logical_size()?;
+        let view = self.viewport();
+        let zoom = self.zoom();
+        let css_per_logical = zoom / view.scale;
+        let (dw, dh) = geometry::displayed(logical, zoom, view);
+        let offset = self.imp().offset.get();
+        let left = view.width / 2.0 + offset.0 - dw / 2.0;
+        let top = view.height / 2.0 + offset.1 - dh / 2.0;
+        Some(((x - left) / css_per_logical, (y - top) / css_per_logical))
+    }
+
+    fn css_per_logical(&self) -> f64 {
+        self.zoom() / self.viewport().scale
+    }
+
+    fn begin_crop_drag(&self, x: f64, y: f64) {
+        let imp = self.imp();
+        let (Some(selection), Some(start)) = (imp.crop.get(), self.widget_to_image(x, y)) else {
+            return;
+        };
+        let tolerance = CROP_GRAB / self.css_per_logical();
+        imp.crop_drag.set(Some(CropDrag {
+            grab: selection.hit(start, tolerance),
+            from: selection,
+            start,
+        }));
+    }
+
+    fn update_crop_drag(&self, dx: f64, dy: f64) {
+        let imp = self.imp();
+        let (Some(drag), Some(bounds)) = (imp.crop_drag.get(), self.logical_size()) else {
+            return;
+        };
+        let per = self.css_per_logical();
+        let delta = (dx / per, dy / per);
+        let selection = match drag.grab {
+            Some(grab) => drag.from.dragged(grab, delta, bounds),
+            None => Selection::between(
+                drag.start,
+                (drag.start.0 + delta.0, drag.start.1 + delta.1),
+                bounds,
+            ),
+        };
+        imp.crop.set(Some(selection));
+        self.notify_view();
     }
 
     /// Redraws now and tells listeners on the next idle, which keeps their

@@ -136,9 +136,39 @@ pub fn ensure_default_settings() {
     }
 }
 
-/// Persists the chosen theme, keeping the rest of the file (and its comments)
-/// as the user left it.
-pub fn save_theme(theme_id: &str) -> io::Result<()> {
+/// One setting and the value to store for it.
+#[derive(Clone, Copy, Debug)]
+pub enum Setting<'a> {
+    Theme(&'a str),
+    CornerRoundness(u32),
+    TextSize(u32),
+    /// `None` goes back to the system font.
+    InterfaceFont(Option<&'a str>),
+    ScrollZooms(bool),
+    Checkerboard(bool),
+    ShowSidebar(bool),
+    ReduceMotion(bool),
+}
+
+impl Setting<'_> {
+    /// The settings key and its YAML value; `None` means the key is removed.
+    fn entry(&self) -> (&'static str, Option<String>) {
+        match *self {
+            Self::Theme(id) => ("theme", Some(yaml_string(id))),
+            Self::CornerRoundness(value) => ("corner_roundness", Some(value.to_string())),
+            Self::TextSize(value) => ("text_size", Some(value.to_string())),
+            Self::InterfaceFont(font) => ("interface_font", font.map(yaml_string)),
+            Self::ScrollZooms(value) => ("scroll_zooms", Some(value.to_string())),
+            Self::Checkerboard(value) => ("checkerboard", Some(value.to_string())),
+            Self::ShowSidebar(value) => ("show_sidebar", Some(value.to_string())),
+            Self::ReduceMotion(value) => ("reduce_motion", Some(value.to_string())),
+        }
+    }
+}
+
+/// Persists one setting, keeping the rest of the file (and its comments) as
+/// the user left it.
+pub fn save(setting: Setting) -> io::Result<()> {
     let path = settings_path();
     let existing = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -148,33 +178,37 @@ pub fn save_theme(theme_id: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, with_theme(&existing, theme_id))
+    let (key, value) = setting.entry();
+    fs::write(&path, with_key(&existing, key, value.as_deref()))
 }
 
-fn with_theme(text: &str, theme_id: &str) -> String {
-    let line = format!("theme: {}", yaml_string(theme_id));
+/// `text` with the top-level `key` set to the YAML `value`, or removed when
+/// `value` is `None`. A missing key is appended.
+fn with_key(text: &str, key: &str, value: Option<&str>) -> String {
     let mut replaced = false;
-    let mut out: Vec<String> = text
-        .lines()
-        .map(|existing| {
-            // Only an unindented `theme:` is the setting; comments and keys
-            // nested under something else are left alone.
-            let is_theme_key = existing
-                .strip_prefix("theme")
-                .is_some_and(|rest| rest.trim_start().starts_with(':'));
-            if !replaced && is_theme_key {
-                replaced = true;
-                line.clone()
-            } else {
-                existing.to_owned()
+    let mut out: Vec<String> = Vec::new();
+    for existing in text.lines() {
+        // Only an unindented `key:` is the setting; comments and keys nested
+        // under something else are left alone.
+        let is_key = existing
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with(':'));
+        if !replaced && is_key {
+            replaced = true;
+            if let Some(value) = value {
+                out.push(format!("{key}: {value}"));
             }
-        })
-        .collect();
-    if !replaced {
-        out.push(line);
+        } else {
+            out.push(existing.to_owned());
+        }
+    }
+    if !replaced && let Some(value) = value {
+        out.push(format!("{key}: {value}"));
     }
     let mut joined = out.join("\n");
-    joined.push('\n');
+    if !joined.is_empty() {
+        joined.push('\n');
+    }
     joined
 }
 
@@ -254,27 +288,64 @@ mod tests {
     #[test]
     fn theme_line_is_replaced_in_place() {
         let text = "# hi\ntheme: system\ntext_size: 14\n";
-        let out = with_theme(text, "nord");
+        let out = with_key(text, "theme", Some("\"nord\""));
         assert_eq!(out, "# hi\ntheme: \"nord\"\ntext_size: 14\n");
     }
 
     #[test]
     fn theme_line_is_appended_when_missing() {
-        let out = with_theme("text_size: 14\n", "nord");
+        let out = with_key("text_size: 14\n", "theme", Some("\"nord\""));
         assert_eq!(out, "text_size: 14\ntheme: \"nord\"\n");
         assert_eq!(parse(&out).unwrap().theme, "nord");
     }
 
     #[test]
     fn commented_and_indented_theme_lines_are_not_replaced() {
-        let out = with_theme("# theme: x\nother:\n  theme: y\n", "nord");
+        let out = with_key(
+            "# theme: x\nother:\n  theme: y\n",
+            "theme",
+            Some("\"nord\""),
+        );
         assert_eq!(out, "# theme: x\nother:\n  theme: y\ntheme: \"nord\"\n");
+    }
+
+    #[test]
+    fn numbers_and_flags_round_trip() {
+        let mut text = DEFAULT_SETTINGS.to_owned();
+        for setting in [
+            Setting::CornerRoundness(70),
+            Setting::TextSize(16),
+            Setting::ScrollZooms(true),
+            Setting::Checkerboard(false),
+            Setting::ShowSidebar(false),
+            Setting::ReduceMotion(true),
+            Setting::InterfaceFont(Some("Fira \"Code\"")),
+        ] {
+            let (key, value) = setting.entry();
+            text = with_key(&text, key, value.as_deref());
+        }
+        let parsed = parse(&text).unwrap();
+        assert_eq!(parsed.corner_roundness, 70);
+        assert_eq!(parsed.text_size, 16);
+        assert!(parsed.scroll_zooms && parsed.reduce_motion);
+        assert!(!parsed.checkerboard && !parsed.show_sidebar);
+        assert_eq!(parsed.interface_font.as_deref(), Some("Fira \"Code\""));
+        // Comments from the default file survive.
+        assert!(text.contains("# Turn off interface animations."));
+    }
+
+    #[test]
+    fn clearing_a_setting_removes_only_its_line() {
+        let text = "theme: system\ninterface_font: \"Fira\"\ntext_size: 14\n";
+        let out = with_key(text, "interface_font", None);
+        assert_eq!(out, "theme: system\ntext_size: 14\n");
+        assert_eq!(with_key(&out, "interface_font", None), out);
     }
 
     #[test]
     fn theme_ids_are_escaped() {
         for id in ["we\"ird", "back\\slash", "new\nline: x", "#hash"] {
-            let out = with_theme("", id);
+            let out = with_key("", "theme", Setting::Theme(id).entry().1.as_deref());
             assert_eq!(parse(&out).unwrap().theme, id, "{out}");
         }
     }

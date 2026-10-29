@@ -83,6 +83,13 @@ pub fn schedule(window: &gtk::ApplicationWindow, menu: &gtk::MenuButton) {
                         &Path::new(&target).with_extension("menu.png"),
                     );
                 }
+                // Whatever settings window the actions opened.
+                if let Some(settings) = crate::settings_window::open_window() {
+                    save(
+                        settings.upcast_ref(),
+                        &Path::new(&target).with_extension("settings.png"),
+                    );
+                }
                 if let Some(app) = window.application() {
                     app.quit();
                 }

@@ -25,7 +25,7 @@ use std::{
 use gtk::{gdk, gio, glib, prelude::*};
 use serde::Deserialize;
 
-use crate::settings::{self, DEFAULT_THEME_ID, SYSTEM_THEME_ID, Settings};
+use crate::settings::{self, DEFAULT_THEME_ID, SYSTEM_THEME_ID, Setting, Settings};
 
 const STYLE_CSS: &str = include_str!("style.css");
 const CATALOG: &str = include_str!("../data/themes.yml");
@@ -527,8 +527,8 @@ fn tokens_css(tokens: &ThemeTokens, settings: &Settings) -> String {
     let small = radius(5.0, settings.corner_roundness);
     let medium = radius(9.0, settings.corner_roundness);
     css.push_str(&format!(
-        "button, entry, tooltip, .thumb, .menu-item, listview > row {{ border-radius: {small}px; }}\n\
-         popover > contents {{ border-radius: {medium}px; }}\n"
+        "button, entry, spinbutton, tooltip, .thumb, .menu-item, listview > row, .nav-item {{ border-radius: {small}px; }}\n\
+         popover > contents, .pv-card, .theme-card {{ border-radius: {medium}px; }}\n"
     ));
     css
 }
@@ -541,6 +541,11 @@ thread_local! {
     static CURRENT: RefCell<Option<ThemeTokens>> = const { RefCell::new(None) };
     static LISTENERS: RefCell<Vec<Rc<dyn Fn() -> glib::ControlFlow>>> = const { RefCell::new(Vec::new()) };
     static MANAGER: RefCell<Option<Rc<ThemeManager>>> = const { RefCell::new(None) };
+}
+
+/// The tokens of the theme in use, once one has been applied.
+pub fn current_tokens() -> Option<ThemeTokens> {
+    CURRENT.with(|current| current.borrow().clone())
 }
 
 /// Colours of the transparency checkerboard for the active theme.
@@ -660,8 +665,13 @@ impl ThemeManager {
 
     /// Chooses a theme, remembers the choice and applies it immediately.
     pub fn select_theme(&self, id: &str) {
-        if let Err(error) = settings::save_theme(id) {
-            eprintln!("previewer: cannot save theme choice: {error}");
+        self.apply(Setting::Theme(id));
+    }
+
+    /// Saves one setting and applies it immediately.
+    pub fn apply(&self, setting: Setting) {
+        if let Err(error) = settings::save(setting) {
+            eprintln!("previewer: cannot save {setting:?}: {error}");
         }
         self.reload();
     }

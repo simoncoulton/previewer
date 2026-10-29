@@ -371,3 +371,185 @@ tooltip.background {
 tooltip.background label {
   color: @pv_text;
 }
+
+/* ---- Settings window ---------------------------------------------------- */
+
+.settings-nav {
+  background: @pv_surface;
+  box-shadow: inset -1px 0 alpha(@pv_border, 0.6);
+  padding: 12px 8px;
+}
+
+.nav-list {
+  background: transparent;
+}
+
+.nav-list row.nav-item {
+  background: transparent;
+  color: @pv_text;
+  padding: 8px 10px;
+  margin: 2px 0;
+  box-shadow: none;
+  outline: none;
+  transition: background 120ms ease-out;
+}
+
+.nav-list row.nav-item:hover {
+  background: alpha(@pv_accent, 0.08);
+}
+
+.nav-list row.nav-item:selected {
+  background: alpha(@pv_accent, 0.22);
+  color: @pv_text;
+}
+
+.nav-list row.nav-item image {
+  color: @pv_dim_text;
+}
+
+.nav-list row.nav-item:selected image {
+  color: @pv_accent;
+}
+
+.settings-page {
+  padding: 24px 28px;
+}
+
+.settings-page .page-title {
+  font-size: 1.5em;
+  font-weight: 700;
+}
+
+.settings-page .section-heading {
+  color: @pv_dim_text;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+.settings-page .group-heading {
+  font-weight: 600;
+}
+
+.pv-card {
+  background: @pv_surface;
+  border: 1px solid alpha(@pv_border, 0.6);
+}
+
+.pv-card separator {
+  background: alpha(@pv_border, 0.5);
+  min-height: 1px;
+}
+
+.pv-card .setting-row {
+  padding: 12px 14px;
+}
+
+.setting-title {
+  font-weight: 500;
+}
+
+.setting-hint {
+  font-size: 0.9em;
+}
+
+/* The theme picker sits in its card without a row around it. */
+.theme-grid {
+  padding: 14px;
+}
+
+button.theme-card {
+  background: alpha(@pv_text, 0.04);
+  color: @pv_text;
+  border: 2px solid transparent;
+  box-shadow: none;
+  text-shadow: none;
+  padding: 8px;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+
+button.theme-card:hover {
+  background: alpha(@pv_accent, 0.12);
+}
+
+button.theme-card.active {
+  background: alpha(@pv_accent, 0.12);
+  border-color: @pv_accent;
+}
+
+button.theme-card:focus-visible {
+  outline: 2px solid @pv_accent;
+  outline-offset: 1px;
+}
+
+switch.pv-switch {
+  background: alpha(@pv_text, 0.2);
+  color: @pv_text;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  border-radius: 999px;
+}
+
+switch.pv-switch:checked {
+  background: @pv_accent;
+}
+
+switch.pv-switch slider {
+  background: @pv_text;
+  border: none;
+  box-shadow: none;
+  border-radius: 999px;
+}
+
+scale.pv-scale trough {
+  background: alpha(@pv_text, 0.18);
+  border: none;
+  min-height: 4px;
+  border-radius: 999px;
+}
+
+scale.pv-scale highlight {
+  background: @pv_accent;
+  border: none;
+  border-radius: 999px;
+}
+
+scale.pv-scale slider {
+  background: @pv_accent;
+  border: none;
+  box-shadow: none;
+  min-width: 16px;
+  min-height: 16px;
+  border-radius: 999px;
+}
+
+scale.pv-scale value,
+scale.pv-scale label {
+  color: @pv_dim_text;
+}
+
+entry.pv-entry,
+spinbutton.pv-entry {
+  background: alpha(@pv_text, 0.08);
+  color: @pv_text;
+  border: 1px solid alpha(@pv_border, 0.8);
+  box-shadow: none;
+  min-height: 28px;
+}
+
+entry.pv-entry:focus-within,
+spinbutton.pv-entry:focus-within {
+  border-color: @pv_accent;
+  outline: none;
+}
+
+spinbutton.pv-entry button {
+  background: transparent;
+  color: @pv_text;
+  border: none;
+  box-shadow: none;
+}
+
+spinbutton.pv-entry button:hover {
+  background: alpha(@pv_accent, 0.15);
+}

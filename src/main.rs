@@ -5,6 +5,7 @@ mod debug;
 mod decode;
 mod library;
 mod settings;
+mod settings_window;
 mod theme;
 mod window;
 
@@ -16,6 +17,10 @@ const APP_ID: &str = "dev.previewer.Previewer";
 const ACCELS: &[(&str, &[&str])] = &[
     ("win.open", &["<Ctrl>o"]),
     ("win.copy", &["<Ctrl>c"]),
+    ("win.settings", &["<Ctrl>comma"]),
+    ("win.crop", &["<Ctrl>k"]),
+    ("win.crop-apply", &["Return", "KP_Enter"]),
+    ("win.undo-crop", &["<Ctrl>z"]),
     ("win.next", &["Right", "Page_Down"]),
     ("win.previous", &["Left", "Page_Up"]),
     ("win.first", &["Home"]),
